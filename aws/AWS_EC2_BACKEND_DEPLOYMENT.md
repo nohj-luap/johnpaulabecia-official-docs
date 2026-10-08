@@ -961,3 +961,134 @@ of the following had been demonstrated:
 
 This was the final verified state of the AWS EC2 backend deployment
 before proceeding to the separate Vercel frontend deployment phase.
+
+---
+
+## 22. Redeploy an Updated Backend
+
+Use this procedure when backend code or `.env.production` changes. The existing EC2 instance, Elastic IP, Nginx, Cloudflare DNS/TLS, and Supabase configuration do not need to be recreated.
+
+### 22.1 Verify and Build Locally
+
+From the backend repository:
+
+```bash
+git status
+go test ./...
+```
+
+Build the Linux production binary:
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+go build -o johnpaulabecia-backend ./cmd/server
+```
+
+### 22.2 Upload the Updated Files
+
+Upload the binary and production environment file to the EC2 temporary directory:
+
+```bash
+scp -i ~/.ssh/johnpaulabecia-official-backend.pem \
+  johnpaulabecia-backend \
+  .env.production \
+  ubuntu@52.62.254.55:/tmp/
+```
+
+If SSH/SCP times out, verify whether the local public IP changed. Update the EC2 Security Group SSH rule (`TCP 22`) to the new public IP using `/32`, then retry.
+
+### 22.3 Replace the Production Files
+
+Connect to EC2:
+
+```bash
+ssh -i ~/.ssh/johnpaulabecia-official-backend.pem \
+  ubuntu@52.62.254.55
+```
+
+Stop the backend and replace the deployed files:
+
+```bash
+sudo systemctl stop johnpaulabecia-backend
+
+sudo install -o ubuntu -g ubuntu -m 755 \
+  /tmp/johnpaulabecia-backend \
+  /opt/johnpaulabecia/backend/johnpaulabecia-backend
+
+sudo install -o ubuntu -g ubuntu -m 600 \
+  /tmp/.env.production \
+  /opt/johnpaulabecia/backend/.env.production
+```
+
+Reload systemd and restart:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart johnpaulabecia-backend
+sudo systemctl status johnpaulabecia-backend --no-pager -l
+```
+
+Confirm that the logs show:
+
+```text
+[PRODUCTION] environment: production
+[PRODUCTION] database connection established
+[PRODUCTION] server listening on :8080
+```
+
+### 22.4 Verify the Redeployment
+
+Verify the Go backend directly:
+
+```bash
+curl -i http://127.0.0.1:8080/
+```
+
+Expected:
+
+```text
+HTTP/1.1 200 OK
+John Paul Abecia API
+```
+
+Verify Nginx HTTP → HTTPS redirection:
+
+```bash
+curl -i -H 'Host: api.sannycom.com' http://127.0.0.1/
+```
+
+Expected:
+
+```text
+HTTP/1.1 301 Moved Permanently
+Location: https://api.sannycom.com/
+```
+
+Finally, verify the complete public production path:
+
+```bash
+curl -i https://api.sannycom.com/
+```
+
+Expected:
+
+```text
+HTTP/2 200
+John Paul Abecia API
+```
+
+A successful public request confirms:
+
+```text
+Client
+  ↓ HTTPS
+Cloudflare
+  ↓ HTTPS
+AWS EC2 / Nginx
+  ↓
+Go backend :8080
+  ↓
+Supabase PostgreSQL
+```
+
+The backend redeployment is complete once the service is running, the database connection succeeds, and the public HTTPS endpoint returns HTTP `200`.
